@@ -1,0 +1,8 @@
+{
+  "name": "DineTime BUPC",
+  "description": "Intelligent Food Ordering App for Bicol University Polangui Campus featuring AI recommendations and seamless ordering.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
