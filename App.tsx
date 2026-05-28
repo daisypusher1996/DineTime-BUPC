@@ -15,6 +15,7 @@ import { Button, ProductCard, Badge, Input, Modal, StarRating } from './componen
 import { ChatBot } from './components/ChatBot';
 import { supabase, isSupabaseConfigured } from './services/supabase';
 import { AnimatePresence, motion } from 'framer-motion';
+import { StaffDashboard, StaffMenuManager, StaffOrderManager } from './components/StaffViews';
 
 // --- Theme Constants ---
 const THEME = {
@@ -27,14 +28,14 @@ const THEME = {
 };
 
 const PRESET_AVATARS = [
-  'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&h=200&fit=crop',
-  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&h=200&fit=crop',
-  'https://images.unsplash.com/photo-1527980965255-d3b416303d12?w=200&h=200&fit=crop',
-  'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&h=200&fit=crop',
-  'https://images.unsplash.com/photo-1599566150163-29194dcaad36?w=200&h=200&fit=crop',
-  'https://images.unsplash.com/photo-1580489944761-15a19d654956?w=200&h=200&fit=crop',
-  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=200&h=200&fit=crop',
-  'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=200&h=200&fit=crop',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Aneka',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=John',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Sara',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=George',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Emily',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Ben',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Luna',
 ];
 
 // --- Animation Variants ---
@@ -123,6 +124,20 @@ const OnboardingPage: React.FC<{ onComplete: () => void }> = ({ onComplete }) =>
     { title: "Bicolano Flavors", desc: "Supporting local BUPC stalls with a seamless digital experience. Stay Oragon!" }
   ];
 
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        if (step < 2) {
+          setStep(s => s + 1);
+        } else {
+          onComplete();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [step, onComplete]);
+
   return (
     <div className={`h-screen ${THEME.bg} text-white flex flex-col p-10 overflow-hidden relative`}>
       <div className="absolute top-[-20%] left-[-10%] w-full h-full bg-[#0033A0]/10 blur-[150px] rounded-full" />
@@ -171,6 +186,7 @@ const AuthPage: React.FC<{ onAuth: (user: any) => void }> = ({ onAuth }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({ email: '', password: '', name: '' });
+  const [selectedRole, setSelectedRole] = useState<'Student' | 'Faculty' | 'Staff'>('Student');
   const [error, setError] = useState('');
 
   const handleAuth = async () => {
@@ -198,10 +214,13 @@ const AuthPage: React.FC<{ onAuth: (user: any) => void }> = ({ onAuth }) => {
               id: data.user.id, 
               name: data.user.user_metadata?.full_name || 'BUPC User',
               email: data.user.email,
-              avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(data.user.user_metadata?.full_name || 'User')}&background=random`,
+              avatar: PRESET_AVATARS[0],
               userType: 'Student'
             };
-            await supabase.from('profiles').insert([newProfile]);
+            const { error: insertErr } = await supabase.from('profiles').upsert([newProfile]);
+            if (insertErr) {
+              console.warn("Auto-profile insert warning on login:", insertErr);
+            }
             onAuth(newProfile);
           }
         }
@@ -218,22 +237,53 @@ const AuthPage: React.FC<{ onAuth: (user: any) => void }> = ({ onAuth }) => {
             id: data.user.id, 
             name: form.name, 
             email: form.email, 
-            userType: 'Student',
-            avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(form.name)}&background=random`
+            userType: selectedRole,
+            avatar: PRESET_AVATARS[selectedRole === 'Staff' ? 2 : selectedRole === 'Faculty' ? 3 : 0]
           };
-          await supabase.from('profiles').insert([newProfile]);
-          onAuth(newProfile);
+          
+          // Try upsert first in case a trigger already created a profile skeleton on Auth registration.
+          const { error: dbError } = await supabase.from('profiles').upsert([newProfile]);
+          
+          if (dbError) {
+            console.warn("Direct insert/upsert of profile failed, trying updatefallback in case user trigger already made a skeleton:", dbError);
+            const { error: updateErr } = await supabase
+              .from('profiles')
+              .update({ name: form.name, userType: selectedRole, avatar: newProfile.avatar })
+              .eq('id', data.user.id);
+              
+            if (updateErr) {
+              console.error("Profile fallback update failed:", updateErr);
+              throw new Error(`Profile creation failed. Database constraints: ${dbError.message || updateErr.message}`);
+            }
+          }
+          
+          // Double check or select the finalized profile record from DB
+          const { data: finalProfile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', data.user.id)
+            .maybeSingle();
+
+          onAuth(finalProfile || newProfile);
         }
       }
     } catch (err: any) {
+      console.error("Auth process error details:", err);
       setError(err.message || 'Authentication failed. Please check your credentials.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDemoMode = () => {
-    onAuth(MOCK_USER);
+  const handleDemoMode = (role: 'Student' | 'Staff') => {
+    const demoUser = {
+      ...MOCK_USER,
+      id: role === 'Staff' ? 'demo-staff-123' : 'demo-student-456',
+      name: role === 'Staff' ? 'Oragon Staff (Demo)' : 'Juan Dela Cruz (Demo)',
+      userType: role,
+      avatar: PRESET_AVATARS[role === 'Staff' ? 2 : 0],
+    };
+    onAuth(demoUser);
   };
 
   return (
@@ -264,31 +314,62 @@ const AuthPage: React.FC<{ onAuth: (user: any) => void }> = ({ onAuth }) => {
 
         {error && <div className="mb-6 p-3.5 bg-red-500/10 border border-red-500/20 text-red-500 text-[10px] font-black rounded-2xl text-center">{error}</div>}
 
-        <div className="space-y-4">
-          {!isLogin && <Input label="Full Name" placeholder="Juan Dela Cruz" value={form.name} onChange={(e:any) => setForm({...form, name: e.target.value})} />}
+        <form 
+          onSubmit={(e: any) => { e.preventDefault(); handleAuth(); }}
+          className="space-y-4"
+        >
+          {!isLogin && (
+            <>
+              <Input label="Full Name" placeholder="Juan Dela Cruz" value={form.name} onChange={(e:any) => setForm({...form, name: e.target.value})} />
+              <div className="space-y-2 mb-4">
+                <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Registering As</p>
+                <div className="flex gap-2"> 
+                  {['Student', 'Faculty', 'Staff'].map(type => ( 
+                    <button 
+                      key={type} 
+                      type="button"
+                      onClick={() => setSelectedRole(type as any)} 
+                      className={`flex-1 py-2.5 rounded-xl text-[9px] font-black border transition-all ${selectedRole === type ? 'bg-[#FF671F] border-[#FF671F] text-white' : 'bg-white/5 border-white/10 text-slate-500'}`}
+                    > 
+                      {type} 
+                    </button> 
+                  ))} 
+                </div>
+              </div>
+            </>
+          )}
           <Input label="Email Address" placeholder="user@bupc.edu.ph" value={form.email} onChange={(e:any) => setForm({...form, email: e.target.value})} />
           <Input label="Password" type="password" placeholder="••••••••" value={form.password} onChange={(e:any) => setForm({...form, password: e.target.value})} />
           
-          <Button className="w-full h-16 rounded-[2rem] mt-4 text-base shadow-2xl" onClick={handleAuth} disabled={loading}>
+          <Button type="submit" className="w-full h-16 rounded-[2rem] mt-4 text-base shadow-2xl" disabled={loading}>
             {loading ? <Loader className="animate-spin" size={20} /> : (isLogin ? 'Sign In' : 'Sign Up')}
           </Button>
 
           <button 
+            type="button"
             onClick={() => setIsLogin(!isLogin)}
             className="w-full py-4 text-[10px] font-black uppercase text-slate-500 tracking-widest hover:text-white transition-colors"
           >
             {isLogin ? "New to DineTime? Create Account" : "Already have an account? Sign In"}
           </button>
 
-          <div className="pt-4 border-t border-white/5">
+          <div className="pt-4 border-t border-white/5 space-y-2">
              <button 
-               onClick={handleDemoMode}
+               type="button"
+               onClick={() => handleDemoMode('Student')}
                className="w-full py-3 bg-white/5 rounded-2xl text-[10px] font-black uppercase text-blue-400 tracking-widest border border-blue-500/20 hover:bg-blue-500/10 transition-all"
              >
-               Try Demo Mode
+               Student Demo Mode
+             </button>
+             <button 
+               type="button"
+               onClick={() => handleDemoMode('Staff')}
+               className="w-full py-3 bg-white/5 rounded-2xl text-[10px] font-black uppercase text-orange-400 tracking-widest border border-orange-500/20 hover:bg-orange-500/10 transition-all"
+             >
+               Staff Demo Mode
              </button>
           </div>
-        </div>
+        </form>
       </motion.div>
     </div>
   );
@@ -420,10 +501,15 @@ const Header: React.FC<{ title?: string; showLocation?: boolean; backUrl?: strin
 };
 
 // --- Navigation ---
-const BottomNav: React.FC<{ cartCount: number }> = ({ cartCount }) => {
+const BottomNav: React.FC<{ cartCount: number; user: any }> = ({ cartCount, user }) => {
   const location = useLocation();
   const isActive = (path: string) => location.pathname === path;
-  const navItems = [
+  const navItems = user?.userType === 'Staff' ? [
+    { icon: Home, label: 'Dashboard', path: '/' },
+    { icon: UtensilsCrossed, label: 'Menu', path: '/menu' },
+    { icon: ClipboardList, label: 'Orders', path: '/orders' },
+    { icon: User, label: 'Profile', path: '/profile' },
+  ] : [
     { icon: Home, label: 'Home', path: '/' },
     { icon: UtensilsCrossed, label: 'Menu', path: '/menu' },
     { icon: ShoppingBag, label: 'Cart', path: '/cart', badge: cartCount },
@@ -655,7 +741,11 @@ const FoodDetailsView: React.FC<{
     <PageTransition noPadding>
       <div className="min-h-screen bg-[#050810] text-white">
         <div className="relative h-[35vh]">
-          <img src={item.image} className="w-full h-full object-cover" />
+          <img 
+            src={item.image} 
+            onError={(e: any) => { e.currentTarget.src = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=800&q=80'; }}
+            className="w-full h-full object-cover" 
+          />
           <div className="absolute top-6 left-6 right-6 flex justify-between z-30">
             <button onClick={() => navigate(-1)} className="p-2.5 bg-black/50 backdrop-blur-xl rounded-xl">
               <ChevronLeft size={20} />
@@ -709,7 +799,9 @@ const AppContent: React.FC = () => {
   const [stalls, setStalls] = useState<Stall[]>(STALLS);
   const [menuItems, setMenuItems] = useState<MenuItem[]>(MENU_ITEMS);
   const [favorites, setFavorites] = useState<string[]>([]);
-  const [onboardingComplete, setOnboardingComplete] = useState(false);
+  const [onboardingComplete, setOnboardingComplete] = useState(() => {
+    return localStorage.getItem('onboarding_complete') === 'true';
+  });
   const [loading, setLoading] = useState(true);
   const location = useLocation();
   const navigate = useNavigate();
@@ -728,6 +820,7 @@ const AppContent: React.FC = () => {
             
           if (profile) {
             setUser(profile);
+            localStorage.setItem('onboarding_complete', 'true');
             setOnboardingComplete(true);
           }
         }
@@ -739,6 +832,114 @@ const AppContent: React.FC = () => {
     };
     checkSession();
   }, []);
+
+  // Redirect unauthenticated users back to the root of auth if they are logged out or signed out
+  useEffect(() => {
+    if (onboardingComplete && !user && location.pathname !== '/') {
+      navigate('/', { replace: true });
+    }
+  }, [user, onboardingComplete, location.pathname, navigate]);
+
+  // Fetch real-time values from Supabase tables
+  useEffect(() => {
+    if (!user) return;
+
+    const fetchOrders = async () => {
+      if (!isSupabaseConfigured()) return;
+      try {
+        let query = supabase.from('orders').select('*');
+        if (user.userType !== 'Staff') {
+          query = query.eq('userId', user.id);
+        }
+        const { data, error } = await query.order('date', { ascending: false });
+        if (error) {
+          console.error("Error loading orders from Supabase:", error);
+        } else if (data) {
+          const formatted = data.map((o: any) => ({
+            id: o.id,
+            items: typeof o.items === 'string' ? JSON.parse(o.items) : o.items,
+            subtotal: Number(o.subtotal),
+            fee: Number(o.fee || 15),
+            total: Number(o.total),
+            status: o.status as OrderStatus,
+            date: new Date(o.date),
+            paymentMethod: o.paymentMethod,
+            customerName: o.customerName || 'Customer',
+            userId: o.userId
+          }));
+          setOrders(formatted);
+        }
+      } catch (e) {
+        console.error("Orders fetching exception:", e);
+      }
+    };
+
+    const fetchMenuItems = async () => {
+      if (!isSupabaseConfigured()) return;
+      try {
+        const { data, error } = await supabase.from('menu_items').select('*');
+        if (error) {
+          console.error("Error loading dishes from Supabase:", error);
+        } else if (data && data.length > 0) {
+          const formatted = data.map((item: any) => ({
+            id: item.id,
+            name: item.name,
+            description: item.description,
+            price: Number(item.price),
+            category: item.category,
+            image: item.image,
+            stallName: item.stallName,
+            stallId: item.stallId,
+            rating: Number(item.rating || 4.8),
+            isPopular: !!item.isPopular,
+            isSpicy: !!item.isSpicy,
+            isVeg: !!item.isVeg
+          }));
+          setMenuItems(formatted);
+        } else if (data && data.length === 0) {
+          // Ingest constants if menu_items table is empty
+          await supabase.from('menu_items').insert(MENU_ITEMS.map(i => ({
+            id: i.id,
+            name: i.name,
+            description: i.description,
+            price: i.price,
+            category: i.category,
+            image: i.image,
+            stallName: i.stallName,
+            stallId: i.stallId,
+            rating: i.rating || 4.8,
+            isPopular: i.isPopular || false,
+            isSpicy: i.isSpicy || false,
+            isVeg: i.isVeg || false
+          })));
+        }
+      } catch (e) {
+        console.error("Menu items fetching exception:", e);
+      }
+    };
+
+    fetchOrders();
+    fetchMenuItems();
+
+    const ordersChannel = supabase
+      .channel('live-orders')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+        fetchOrders();
+      })
+      .subscribe();
+
+    const menuChannel = supabase
+      .channel('live-menu')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' }, () => {
+        fetchMenuItems();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(ordersChannel);
+      supabase.removeChannel(menuChannel);
+    };
+  }, [user]);
 
   const toggleFavorite = async (itemId: string) => {
     const isFav = favorites.includes(itemId);
@@ -765,11 +966,111 @@ const AppContent: React.FC = () => {
     }
   };
 
-  const placeOrder = (items: CartItem[], method: PaymentMethod) => {
+  const handleAddMenuItem = async (newItem: MenuItem) => {
+    setMenuItems(prev => [...prev, newItem]);
+    if (isSupabaseConfigured()) {
+      try {
+        await supabase.from('menu_items').insert([{
+          id: newItem.id,
+          name: newItem.name,
+          description: newItem.description,
+          price: newItem.price,
+          category: newItem.category,
+          image: newItem.image,
+          stallName: newItem.stallName,
+          stallId: newItem.stallId,
+          rating: newItem.rating,
+          isPopular: newItem.isPopular,
+          isSpicy: newItem.isSpicy,
+          isVeg: newItem.isVeg
+        }]);
+      } catch (e) {
+        console.error("Error inserting dish to Supabase:", e);
+      }
+    }
+  };
+
+  const handleUpdateMenuItem = async (updatedItem: MenuItem) => {
+    setMenuItems(prev => prev.map(item => item.id === updatedItem.id ? updatedItem : item));
+    if (isSupabaseConfigured()) {
+      try {
+        await supabase.from('menu_items').update({
+          name: updatedItem.name,
+          description: updatedItem.description,
+          price: updatedItem.price,
+          category: updatedItem.category,
+          image: updatedItem.image,
+          stallName: updatedItem.stallName,
+          stallId: updatedItem.stallId,
+          isPopular: updatedItem.isPopular,
+          isSpicy: updatedItem.isSpicy,
+          isVeg: updatedItem.isVeg
+        }).eq('id', updatedItem.id);
+      } catch (e) {
+        console.error("Error updating dish in Supabase:", e);
+      }
+    }
+  };
+
+  const handleDeleteMenuItem = async (id: string) => {
+    setMenuItems(prev => prev.filter(item => item.id !== id));
+    if (isSupabaseConfigured()) {
+      try {
+        await supabase.from('menu_items').delete().eq('id', id);
+      } catch (e) {
+        console.error("Error deleting dish from Supabase:", e);
+      }
+    }
+  };
+
+  const updateOrderStatus = async (orderId: string, newStatus: OrderStatus) => {
+    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
+    if (isSupabaseConfigured()) {
+      try {
+        await supabase.from('orders').update({ status: newStatus }).eq('id', orderId);
+      } catch (err) {
+        console.error("Error updating status on Supabase:", err);
+      }
+    }
+  };
+
+  const placeOrder = async (items: CartItem[], method: PaymentMethod) => {
     const subtotal = items.reduce((s, i) => s + (i.price * i.quantity), 0);
     const total = subtotal + 15;
-    const newOrder: Order = { id: `ORD-${Math.floor(Math.random() * 900000 + 100000)}`, items: [...items], subtotal, fee: 15, total, status: OrderStatus.PENDING, date: new Date(), paymentMethod: method };
+    const orderId = `ORD-${Math.floor(Math.random() * 900000 + 100000)}`;
+    const newOrder: Order = { 
+      id: orderId, 
+      items: [...items], 
+      subtotal, 
+      fee: 15, 
+      total, 
+      status: OrderStatus.PENDING, 
+      date: new Date(), 
+      paymentMethod: method,
+      customerName: user?.name || 'BU Student',
+      userId: user?.id || 'guest'
+    };
+    
     setOrders(prev => [newOrder, ...prev]);
+
+    if (isSupabaseConfigured() && user) {
+      try {
+        await supabase.from('orders').insert([{
+          id: orderId,
+          items: items,
+          subtotal,
+          fee: 15,
+          total,
+          status: OrderStatus.PENDING,
+          date: new Date().toISOString(),
+          paymentMethod: method,
+          customerName: user.name,
+          userId: user.id
+        }]);
+      } catch (err) {
+        console.error("Error inserting order into Supabase:", err);
+      }
+    }
   };
 
   if (loading) return (
@@ -787,86 +1088,130 @@ const AppContent: React.FC = () => {
       <AnimatePresence mode="wait">
         {!onboardingComplete ? (
           <Routes location={location} key="onboarding">
-            <Route path="*" element={<OnboardingPage onComplete={() => setOnboardingComplete(true)} />} />
+            <Route path="*" element={<OnboardingPage onComplete={() => {
+              localStorage.setItem('onboarding_complete', 'true');
+              setOnboardingComplete(true);
+            }} />} />
           </Routes>
         ) : !user ? (
           <Routes location={location} key="auth">
             <Route path="*" element={<AuthPage onAuth={setUser} />} />
           </Routes>
         ) : (
-          <>
+          <motion.div 
+            key="authenticated"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="w-full min-h-screen"
+          >
             <AnimatePresence mode="wait">
               <Routes location={location} key={location.pathname}>
                 <Route path="/" element={
-                  <PageTransition>
-                    <Header showLocation />
-                    <div className="space-y-10">
-                      <motion.div whileHover={{ scale: 1.02 }} className={`${THEME.surface} p-10 rounded-[3rem] shadow-3xl relative overflow-hidden group border-white/20`}>
-                        <div className="relative z-10">
-                          <p className="text-[9px] font-black uppercase text-[#FF671F] tracking-[0.2em] mb-3">Today's Suggestion</p>
-                          <h1 className="text-3xl font-black mb-1 tracking-tighter leading-none">Stay Oragon,</h1>
-                          <h1 className="text-3xl font-black mb-6 tracking-tighter text-blue-400">{user.name.split(' ')[0]}!</h1>
-                          <Button size="md" className="rounded-xl h-11 px-8" onClick={() => navigate('/menu')}>Explore Menu</Button>
+                  user?.userType === 'Staff' ? (
+                    <PageTransition>
+                      <Header title="Operations dashboard" />
+                      <StaffDashboard orders={orders} stalls={stalls} menuItems={menuItems} setStalls={setStalls} user={user} />
+                    </PageTransition>
+                  ) : (
+                    <PageTransition>
+                      <Header showLocation />
+                      <div className="space-y-10">
+                        <motion.div whileHover={{ scale: 1.02 }} className={`${THEME.surface} p-10 rounded-[3rem] shadow-3xl relative overflow-hidden group border-white/20`}>
+                          <div className="relative z-10">
+                            <p className="text-[9px] font-black uppercase text-[#FF671F] tracking-[0.2em] mb-3">Today's Suggestion</p>
+                            <h1 className="text-3xl font-black mb-1 tracking-tighter leading-none">Stay Oragon,</h1>
+                            <h1 className="text-3xl font-black mb-6 tracking-tighter text-blue-400">{user?.name ? user.name.split(' ')[0] : 'Oragon'}!</h1>
+                            <Button size="md" className="rounded-xl h-11 px-8" onClick={() => navigate('/menu')}>Explore Menu</Button>
+                          </div>
+                          
+                          <motion.div
+                            animate={{ 
+                              rotate: [12, 372],
+                              scale: [1, 1.05, 1],
+                              opacity: [0.05, 0.1, 0.05]
+                            }}
+                            transition={{ 
+                              rotate: { duration: 25, repeat: Infinity, ease: "linear" },
+                              scale: { duration: 4, repeat: Infinity, ease: "easeInOut" },
+                              opacity: { duration: 5, repeat: Infinity, ease: "easeInOut" }
+                            }}
+                            className="absolute -right-12 -bottom-12 pointer-events-none"
+                          >
+                            <Sparkles className="text-white group-hover:text-blue-200 transition-colors duration-1000" size={280} />
+                          </motion.div>
+                        </motion.div>
+                        <div>
+                          <div className="flex justify-between items-center mb-6 px-4">
+                            <h3 className="text-[9px] font-black uppercase text-slate-500 tracking-[0.3em]">Featured Stalls</h3>
+                            <div className="w-8 h-1 bg-white/10 rounded-full" />
+                          </div>
+                          <motion.div 
+                            variants={staggerContainer}
+                            initial="hidden"
+                            animate="show"
+                            className="flex gap-4 overflow-x-auto no-scrollbar -mx-4 px-4 pb-6"
+                          >
+                            {stalls.map(s => (
+                              <motion.div key={s.id} variants={staggerItem} whileTap={{ scale: 0.95 }} onClick={() => navigate(`/stalls/${s.id}`)} className="min-w-[200px] h-36 relative rounded-[2.5rem] overflow-hidden border border-white/10 group cursor-pointer">
+                                <img 
+                                  src={s.image} 
+                                  onError={(e: any) => { e.currentTarget.src = 'https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?auto=format&fit=crop&w=800&q=80'; }}
+                                  className="w-full h-full object-cover group-hover:scale-110 transition-all duration-700" 
+                                />
+                                <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent p-5 flex flex-col justify-end"><h4 className="text-[12px] font-black text-white">{s.name}</h4><p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest">{s.openTime} - {s.closeTime}</p></div>
+                              </motion.div>
+                            ))}
+                          </motion.div>
                         </div>
-                        
-                        <motion.div
-                          animate={{ 
-                            rotate: [12, 372],
-                            scale: [1, 1.05, 1],
-                            opacity: [0.05, 0.1, 0.05]
-                          }}
-                          transition={{ 
-                            rotate: { duration: 25, repeat: Infinity, ease: "linear" },
-                            scale: { duration: 4, repeat: Infinity, ease: "easeInOut" },
-                            opacity: { duration: 5, repeat: Infinity, ease: "easeInOut" }
-                          }}
-                          className="absolute -right-12 -bottom-12 pointer-events-none"
-                        >
-                          <Sparkles className="text-white group-hover:text-blue-200 transition-colors duration-1000" size={280} />
-                        </motion.div>
-                      </motion.div>
-                      <div>
-                        <div className="flex justify-between items-center mb-6 px-4">
-                          <h3 className="text-[9px] font-black uppercase text-slate-500 tracking-[0.3em]">Featured Stalls</h3>
-                          <div className="w-8 h-1 bg-white/10 rounded-full" />
+                        <div>
+                          <h3 className="text-[9px] font-black uppercase text-slate-500 tracking-[0.3em] mb-6 px-4">Most Loved (5★)</h3>
+                          <motion.div 
+                            variants={staggerContainer}
+                            initial="hidden"
+                            animate="show"
+                            className="grid grid-cols-2 gap-4 pb-20"
+                          >
+                            {menuItems.filter(i => i.isPopular).slice(0, 4).map(i => (
+                              <motion.div key={i.id} variants={staggerItem}>
+                                <ProductCard item={i} onAdd={addToCart} onClick={() => navigate(`/food/${i.id}`)} />
+                              </motion.div>
+                            ))}
+                          </motion.div>
                         </div>
-                        <motion.div 
-                          variants={staggerContainer}
-                          initial="hidden"
-                          animate="show"
-                          className="flex gap-4 overflow-x-auto no-scrollbar -mx-4 px-4 pb-6"
-                        >
-                          {stalls.map(s => (
-                            <motion.div key={s.id} variants={staggerItem} whileTap={{ scale: 0.95 }} onClick={() => navigate(`/stalls/${s.id}`)} className="min-w-[200px] h-36 relative rounded-[2.5rem] overflow-hidden border border-white/10 group cursor-pointer">
-                              <img src={s.image} className="w-full h-full object-cover group-hover:scale-110 transition-all duration-700" />
-                              <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent p-5 flex flex-col justify-end"><h4 className="text-[12px] font-black text-white">{s.name}</h4><p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest">{s.openTime} - {s.closeTime}</p></div>
-                            </motion.div>
-                          ))}
-                        </motion.div>
                       </div>
-                      <div>
-                        <h3 className="text-[9px] font-black uppercase text-slate-500 tracking-[0.3em] mb-6 px-4">Most Loved (5★)</h3>
-                        <motion.div 
-                          variants={staggerContainer}
-                          initial="hidden"
-                          animate="show"
-                          className="grid grid-cols-2 gap-4 pb-20"
-                        >
-                          {menuItems.filter(i => i.isPopular).slice(0, 4).map(i => (
-                            <motion.div key={i.id} variants={staggerItem}>
-                              <ProductCard item={i} onAdd={addToCart} onClick={() => navigate(`/food/${i.id}`)} />
-                            </motion.div>
-                          ))}
-                        </motion.div>
-                      </div>
-                    </div>
-                  </PageTransition>
+                    </PageTransition>
+                  )
                 } />
-                <Route path="/menu" element={<PageTransition><MarketplaceView menuItems={menuItems} addToCart={addToCart} /></PageTransition>} />
+                <Route path="/menu" element={
+                  user?.userType === 'Staff' ? (
+                    <PageTransition>
+                      <Header title="Manage inventory" />
+                      <StaffMenuManager menuItems={menuItems} stalls={stalls} onAdd={handleAddMenuItem} onUpdate={handleUpdateMenuItem} onDelete={handleDeleteMenuItem} />
+                    </PageTransition>
+                  ) : (
+                    <PageTransition>
+                      <MarketplaceView menuItems={menuItems} addToCart={addToCart} />
+                    </PageTransition>
+                  )
+                } />
                 <Route path="/food/:id" element={<FoodDetailsView menuItems={menuItems} reviews={reviews} favorites={favorites} toggleFavorite={toggleFavorite} addToCart={addToCart} onAddReview={handleAddReview} />} />
                 <Route path="/stalls/:id" element={<PageTransition><StallDetailsView stalls={stalls} menuItems={menuItems} addToCart={addToCart} reviews={reviews} onAddReview={handleAddReview} /></PageTransition>} />
                 <Route path="/cart" element={<PageTransition><Header title="Your Cart" /><CartView cart={cart} setCart={setCart} placeOrder={placeOrder} addToCart={addToCart} /></PageTransition>} />
-                <Route path="/orders" element={<PageTransition><Header title="My Orders" /><OrdersListView orders={orders} /></PageTransition>} />
+                <Route path="/orders" element={
+                  user?.userType === 'Staff' ? (
+                    <PageTransition>
+                      <Header title="Manage orders" />
+                      <StaffOrderManager orders={orders} onUpdateStatus={updateOrderStatus} />
+                    </PageTransition>
+                  ) : (
+                    <PageTransition>
+                      <Header title="My Orders" />
+                      <OrdersListView orders={orders} />
+                    </PageTransition>
+                  )
+                } />
                 <Route path="/orders/:id" element={<PageTransition><OrderDetailView orders={orders} /></PageTransition>} />
                 <Route path="/profile" element={<PageTransition><Header title="Profile" /><ProfileView user={user} setUser={setUser} /></PageTransition>} />
                 <Route path="/notifications" element={<PageTransition><Header title="Alerts" backUrl="/" />
@@ -882,9 +1227,9 @@ const AppContent: React.FC = () => {
                 </PageTransition>} />
               </Routes>
             </AnimatePresence>
-            <BottomNav cartCount={cart.length} />
+            <BottomNav cartCount={cart.length} user={user} />
             <ChatBot menuItems={menuItems} stalls={stalls} />
-          </>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>
@@ -904,7 +1249,11 @@ const StallDetailsView: React.FC<any> = ({ stalls, menuItems, addToCart, reviews
       <Header backUrl="/" />
       <div className={`${THEME.surface} rounded-[2.5rem] overflow-hidden mb-8 border-white/20`}>
         <div className="h-40 relative">
-          <img src={stall.image} className="w-full h-full object-cover" />
+          <img 
+            src={stall.image} 
+            onError={(e: any) => { e.currentTarget.src = 'https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?auto=format&fit=crop&w=800&q=80'; }}
+            className="w-full h-full object-cover" 
+          />
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
         </div>
         <div className="p-7">
@@ -942,7 +1291,11 @@ const CartView: React.FC<any> = ({ cart, setCart, placeOrder, addToCart }) => {
     <div className="space-y-4">
       {cart.map((i:any) => (
         <div key={i.id} className={`${THEME.surface} p-4 rounded-3xl flex items-center gap-4`}>
-          <img src={i.image} className="w-16 h-16 rounded-2xl object-cover" />
+          <img 
+            src={i.image} 
+            onError={(e: any) => { e.currentTarget.src = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=800&q=80'; }}
+            className="w-16 h-16 rounded-2xl object-cover" 
+          />
           <div className="flex-1">
             <h4 className="text-xs font-black">{i.name}</h4>
             <p className="text-[9px] text-slate-500 font-bold uppercase mb-2">{i.stallName}</p>
@@ -980,14 +1333,20 @@ const CartView: React.FC<any> = ({ cart, setCart, placeOrder, addToCart }) => {
 };
 
 const ProfileView: React.FC<any> = ({ user, setUser }) => {
+  const navigate = useNavigate();
   const [isEdit, setIsEdit] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [form, setForm] = useState({...user});
+  const [form, setForm] = useState(user ? {...user} : {});
+  const [errorText, setErrorText] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   useEffect(() => {
-    setForm({...user});
+    if (user) {
+      setForm({...user});
+    }
   }, [user]);
+
+  if (!user) return null;
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1001,7 +1360,10 @@ const ProfileView: React.FC<any> = ({ user, setUser }) => {
   };
 
   const save = async () => { 
-    if (!isSupabaseConfigured()) {
+    setErrorText(null);
+    const isDemo = !user?.id || String(user.id).startsWith('demo-');
+    
+    if (!isSupabaseConfigured() || isDemo) {
         setUser(form);
         setIsEdit(false);
         return;
@@ -1037,7 +1399,7 @@ const ProfileView: React.FC<any> = ({ user, setUser }) => {
         const fullErrorMessage = typeof error === 'object' && !error.message 
           ? `Error Structure: ${JSON.stringify(error, null, 2)}`
           : `Supabase Error: ${msg}`;
-        alert(fullErrorMessage); 
+        setErrorText(fullErrorMessage);
       } else if (data) { 
         setUser(data); 
         setIsEdit(false); 
@@ -1045,18 +1407,48 @@ const ProfileView: React.FC<any> = ({ user, setUser }) => {
     } catch (err: any) {
       console.error("Unexpected Catch Block Error:", err);
       const errorMsg = err.message || JSON.stringify(err);
-      alert(`Unexpected System Error:\n${errorMsg}`);
+      setErrorText(`Unexpected System Error: ${errorMsg}`);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSignOut = async () => {
+    setLoading(true);
+    // Keep onboarding flag in localStorage so they don't get thrown back to onboarding slides, but stay on Login screen
+    localStorage.setItem('onboarding_complete', 'true');
+    
+    if (isSupabaseConfigured()) {
+      try {
+        // Run supabase auth signOut but prevent hanging network/iframe queries from locking the UI thread
+        await Promise.race([
+          supabase.auth.signOut(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('SignOut Timeout')), 2000))
+        ]).catch(err => {
+          console.warn("Supabase SignOut warning (e.g. timeout or restrictions in iframe):", err);
+        });
+      } catch (err) {
+        console.error("Supabase SignOut catch error:", err);
+      }
+    }
+    
+    // Set user to null.
+    setUser(null);
+    // Explicitly navigate redirect to / to show Login screen immediately
+    navigate('/', { replace: true });
+    setLoading(false);
   };
 
   return (
     <div className="space-y-6">
       <div className={`${THEME.surface} p-8 rounded-[3rem] text-center relative overflow-hidden border-white/10`}>
         <div className="relative w-24 h-24 mx-auto mb-4 group">
-          <img src={user.avatar} className="w-full h-full rounded-[2rem] border-4 border-white/10 object-cover" />
-          <button onClick={() => setIsEdit(true)} className="absolute -bottom-2 -right-2 w-8 h-8 bg-[#FF671F] rounded-xl flex items-center justify-center border-4 border-[#050810] shadow-xl hover:scale-110 transition-transform"><Edit2 size={14} /></button>
+          <img 
+            src={user.avatar} 
+            onError={(e: any) => { e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}&background=random`; }}
+            className="w-full h-full rounded-[2rem] border-4 border-white/10 object-cover" 
+          />
+          <button onClick={() => { setErrorText(null); setIsEdit(true); }} className="absolute -bottom-2 -right-2 w-8 h-8 bg-[#FF671F] rounded-xl flex items-center justify-center border-4 border-[#050810] shadow-xl hover:scale-110 transition-transform"><Edit2 size={14} /></button>
         </div>
         <h2 className="text-lg font-black text-white">{user.name}</h2>
         <div className="mt-2"><span className="text-[8px] font-black uppercase text-[#FF671F] tracking-widest bg-[#FF671F]/10 px-4 py-1.5 rounded-full border border-[#FF671F]/20">Account Type: {user.userType}</span></div>
@@ -1081,18 +1473,31 @@ const ProfileView: React.FC<any> = ({ user, setUser }) => {
         <div className={`${THEME.surface} p-5 rounded-3xl flex items-center gap-5 border-white/10`}><div className="w-11 h-11 bg-yellow-500/10 rounded-2xl flex items-center justify-center text-yellow-400"><Hash size={22} /></div><div><p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-0.5">BUPC ID Reference</p><p className="text-xs font-black text-white">{user.id?.slice(0, 10).toUpperCase()}</p></div></div>
       </div>
       
-      <Button variant="outline" className="w-full h-14 rounded-2xl border-red-500/20 text-red-500 hover:bg-red-500/5 mt-6" onClick={() => setUser(null)}><LogOut size={18} className="mr-3" /> Sign Out from Account</Button>
+      <Button variant="outline" className="w-full h-14 rounded-2xl border-red-500/20 text-red-500 hover:bg-red-500/5 mt-6" onClick={handleSignOut} disabled={loading}><LogOut size={18} className="mr-3" /> Sign Out from Account</Button>
       
       <Modal isOpen={isEdit} onClose={() => setIsEdit(false)} title="Update Account Information">
-        <div className="space-y-6 max-h-[75vh] overflow-y-auto no-scrollbar px-1">
+        <form 
+          onSubmit={(e: any) => { e.preventDefault(); save(); }}
+          className="space-y-6 max-h-[75vh] overflow-y-auto no-scrollbar px-1"
+        >
+          {errorText && (
+            <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-2xl text-[10px] leading-relaxed font-semibold break-words">
+              {errorText}
+            </div>
+          )}
           {/* Avatar Section */}
           <div className="space-y-4">
             <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest text-center">Change Profile Picture</p>
             <div className="flex flex-col items-center gap-6">
               <div className="relative w-20 h-20">
-                 <img src={form.avatar} className="w-full h-full rounded-[2rem] border-4 border-[#FF671F]/30 object-cover" />
+                 <img 
+                   src={form.avatar} 
+                   onError={(e: any) => { e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(form.name || 'User')}&background=random`; }}
+                   className="w-full h-full rounded-[2rem] border-4 border-[#FF671F]/30 object-cover" 
+                 />
                  <motion.button 
                    whileTap={{ scale: 0.9 }}
+                   type="button"
                    onClick={() => fileInputRef.current?.click()}
                    className="absolute -bottom-1 -right-1 w-7 h-7 bg-[#FF671F] rounded-lg flex items-center justify-center text-white border-4 border-[#1A1F2C]"
                  >
@@ -1108,6 +1513,7 @@ const ProfileView: React.FC<any> = ({ user, setUser }) => {
                     <motion.button
                       key={i}
                       whileTap={{ scale: 0.9 }}
+                      type="button"
                       onClick={() => setForm({ ...form, avatar: url })}
                       className={`relative aspect-square rounded-xl overflow-hidden border-2 transition-all ${form.avatar === url ? 'border-[#FF671F] scale-105 shadow-lg' : 'border-white/5 opacity-60 hover:opacity-100'}`}
                     >
@@ -1158,10 +1564,10 @@ const ProfileView: React.FC<any> = ({ user, setUser }) => {
             <Input label="Residential Address" value={form.address || ''} onChange={(e:any) => setForm({...form, address: e.target.value})} />
           </div>
 
-          <Button className="w-full h-14 rounded-2xl text-xs sticky bottom-0 mt-6 shadow-3xl" onClick={save} disabled={loading}>
+          <Button type="submit" className="w-full h-14 rounded-2xl text-xs sticky bottom-0 mt-6 shadow-3xl" disabled={loading}>
             {loading ? <Loader className="animate-spin" size={16} /> : "Update Identity"}
           </Button>
-        </div>
+        </form>
       </Modal>
     </div>
   );

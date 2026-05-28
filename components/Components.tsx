@@ -1,5 +1,6 @@
 
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { MenuItem } from '../types';
 import { Plus, Star, Flame, X } from 'lucide-react';
 import { motion, AnimatePresence, HTMLMotionProps } from 'framer-motion';
@@ -69,23 +70,41 @@ export const StarRating: React.FC<any> = ({ rating, max = 5, size = 16, interact
 );
 
 // --- Modal ---
-export const Modal: React.FC<any> = ({ isOpen, onClose, title, children }) => (
-  <AnimatePresence>
-    {isOpen && (
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-black/80 backdrop-blur-xl">
-        <motion.div initial={{ scale: 0.9, y: 30 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 30 }} className="bg-[#1A1F2C] rounded-[2.5rem] w-full max-w-sm overflow-hidden shadow-3xl border border-white/10">
-          <div className="flex justify-between items-center p-5 border-b border-white/5">
-            <h3 className="font-black text-white uppercase tracking-widest text-[9px]">{title}</h3>
-            <button onClick={onClose} className="p-2 bg-white/5 rounded-xl text-slate-500 hover:text-white transition-colors">
-              <X size={16} />
-            </button>
-          </div>
-          <div className="p-6">{children}</div>
+export const Modal: React.FC<any> = ({ isOpen, onClose, title, children }) => {
+  if (typeof window === 'undefined') return null;
+  return createPortal(
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div 
+          key={`modal-backdrop-${title}`}
+          initial={{ opacity: 0 }} 
+          animate={{ opacity: 1 }} 
+          exit={{ opacity: 0 }} 
+          onClick={onClose}
+          className="fixed inset-0 z-[1000] flex items-center justify-center p-6 bg-black/85 backdrop-blur-md"
+        >
+          <motion.div 
+            key={`modal-content-${title}`}
+            initial={{ scale: 0.9, y: 30 }} 
+            animate={{ scale: 1, y: 0 }} 
+            exit={{ scale: 0.9, y: 30 }} 
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#10141d] rounded-[2.5rem] w-full max-w-sm overflow-hidden shadow-3xl border border-white/10"
+          >
+            <div className="flex justify-between items-center p-5 border-b border-white/5">
+              <h3 className="font-black text-white uppercase tracking-widest text-[9px]">{title}</h3>
+              <button onClick={onClose} className="p-2 bg-white/5 rounded-xl text-slate-500 hover:text-white transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="p-6">{children}</div>
+          </motion.div>
         </motion.div>
-      </motion.div>
-    )}
-  </AnimatePresence>
-);
+      )}
+    </AnimatePresence>,
+    document.body
+  );
+};
 
 // --- Product Card ---
 export const ProductCard: React.FC<any> = ({ item, onAdd, onClick }) => (
@@ -95,7 +114,12 @@ export const ProductCard: React.FC<any> = ({ item, onAdd, onClick }) => (
     className="bg-white/5 backdrop-blur-md rounded-[2.2rem] shadow-xl border border-white/10 overflow-hidden cursor-pointer hover:border-white/20 transition-all p-3 flex flex-col h-full group"
   >
     <div className="relative aspect-square rounded-[1.8rem] overflow-hidden mb-3">
-      <img src={item.image} alt={item.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
+      <img 
+        src={item.image} 
+        alt={item.name} 
+        onError={(e: any) => { e.currentTarget.src = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=800&q=80'; }}
+        className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" 
+      />
       <div className="absolute top-2 right-2 flex flex-col gap-1.5">
         {item.isPopular && <div className="bg-yellow-400 text-yellow-900 text-[6px] font-black px-1.5 py-0.5 rounded-md uppercase">Top</div>}
         {item.isSpicy && <div className="bg-red-500 text-white p-1 rounded-md"><Flame size={10} fill="currentColor" /></div>}
